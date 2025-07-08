@@ -3,6 +3,7 @@ function onOpen() {
   ui.createMenu('tldvメール処理')
     .addItem('メールを処理', 'processEmails')
     .addSeparator()
+    .addItem('行の高さを24pxに設定', 'setRowHeight')
     .addItem('対象メールアドレスを設定', 'setEmailAddress')
     .addItem('自動実行トリガーを設定', 'setupTrigger')
     .addItem('トリガーを削除', 'removeTriggers')
@@ -46,7 +47,14 @@ function processEmails() {
       messages.forEach(message => {
         const receivedDate = message.getDate();
         const subject = message.getSubject();
-        const body = message.getPlainBody();
+        let body = message.getPlainBody();
+        
+        // 不要な部分を削除
+        const removePattern = /機能紹介[\s\S]*?ミーティングの要約の受信を停止するには、こちらから登録を解除.*?してください。/;
+        body = body.replace(removePattern, '').trim();
+        
+        // 冒頭のURLを削除
+        body = body.replace(/^\(\s*https:\/\/tldv\.io\/ja\/\s*\)\s*/, '').trim();
         
         sheet.getRange(currentRow, 1).setValue(receivedDate);
         sheet.getRange(currentRow, 2).setValue(subject);
@@ -58,6 +66,13 @@ function processEmails() {
       thread.removeLabel(tldvLabel);
       thread.addLabel(processedLabel);
     });
+    
+    // 追加した行の高さを24ピクセルに設定
+    if (currentRow > lastRow + 1) {
+      for (let row = lastRow + 1; row < currentRow; row++) {
+        sheet.setRowHeight(row, 24);
+      }
+    }
     
     SpreadsheetApp.getUi().alert(`${threads.length}件のメールを処理しました。`);
     
@@ -110,4 +125,22 @@ function removeTriggers() {
       ScriptApp.deleteTrigger(trigger);
     }
   });
+}
+
+function setRowHeight() {
+  try {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+    const lastRow = sheet.getLastRow();
+    
+    if (lastRow > 0) {
+      for (let row = 1; row <= lastRow; row++) {
+        sheet.setRowHeight(row, 24);
+      }
+      SpreadsheetApp.getUi().alert(`${lastRow}行の高さを24ピクセルに設定しました。`);
+    } else {
+      SpreadsheetApp.getUi().alert('シートにデータがありません。');
+    }
+  } catch (error) {
+    SpreadsheetApp.getUi().alert('行の高さ設定中にエラーが発生しました。\n' + error.toString());
+  }
 }
