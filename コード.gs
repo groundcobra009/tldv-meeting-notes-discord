@@ -7,6 +7,11 @@ function onOpen() {
     .addItem('対象メールアドレスを設定', 'setEmailAddress')
     .addItem('自動実行トリガーを設定', 'setupTrigger')
     .addItem('トリガーを削除', 'removeTriggers')
+    .addSeparator()
+    .addItem('Discord Webhook URLを設定', 'setDiscordWebhook')
+    .addItem('Discordに未送信を通知', 'sendUnsentToDiscord')
+    .addItem('Discord自動送信トリガーを設定', 'setupDiscordTrigger')
+    .addItem('Discord自動送信トリガーを削除', 'removeDiscordTrigger')
     .addToUi();
 }
 
@@ -143,4 +148,173 @@ function setRowHeight() {
   } catch (error) {
     SpreadsheetApp.getUi().alert('行の高さ設定中にエラーが発生しました。\n' + error.toString());
   }
+}
+
+function setDiscordWebhook() {
+  const ui = SpreadsheetApp.getUi();
+  const currentWebhook = PropertiesService.getScriptProperties().getProperty('DISCORD_WEBHOOK') || '';
+  
+  const result = ui.prompt(
+    'Discord Webhook URL設定',
+    'Discord Webhook URLを入力してください:\n現在の設定: ' + (currentWebhook ? '設定済み' : '未設定'),
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (result.getSelectedButton() === ui.Button.OK) {
+    const webhookUrl = result.getResponseText().trim();
+    if (webhookUrl && webhookUrl.startsWith('https://discord.com/api/webhooks/')) {
+      PropertiesService.getScriptProperties().setProperty('DISCORD_WEBHOOK', webhookUrl);
+      ui.alert('Discord Webhook URLを設定しました。');
+    } else if (webhookUrl) {
+      ui.alert('有効なDiscord Webhook URLを入力してください。\nURLは https://discord.com/api/webhooks/ で始まる必要があります。');
+    } else {
+      ui.alert('Webhook URLが入力されていません。');
+    }
+  }
+}
+
+function sendUnsentToDiscord() {
+  try {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+    const sheetName = sheet.getName();
+    
+    // シート名の確認を削除して、どのシートでも動作するようにする
+    console.log('現在のシート名:', sheetName);
+    
+    const webhookUrl = PropertiesService.getScriptProperties().getProperty('DISCORD_WEBHOOK');
+    if (!webhookUrl) {
+      SpreadsheetApp.getUi().alert('Discord Webhook URLが設定されていません。\nメニューから設定してください。');
+      return;
+    }
+    
+    // A列の最終行を確認（クエリ関数のデータ）
+    let lastRow = 1;
+    const columnA = sheet.getRange('A:A').getValues();
+    for (let i = columnA.length - 1; i >= 0; i--) {
+      if (columnA[i][0] !== '') {
+        lastRow = i + 1;
+        break;
+      }
+    }
+    
+    console.log('データの最終行:', lastRow);
+    
+    if (lastRow < 2) {
+      SpreadsheetApp.getUi().alert('送信対象のデータがありません。');
+      return;
+    }
+    
+    let sentCount = 0;
+    
+    // データを一括で取得（パフォーマンス向上）
+    const dataRange = sheet.getRange(2, 1, lastRow - 1, 4);
+    const data = dataRange.getValues();
+    console.log('取得したデータ数:', data.length);
+    
+    let checkedCount = 0;
+    let uncheckedCount = 0;
+    
+    for (let i = 0; i < data.length; i++) {
+      const row = i + 2;
+      const dateValue = data[i][0];
+      const titleValue = data[i][1];
+      const summaryValue = data[i][2];
+      const checkboxValue = data[i][3];
+      
+      console.log(`行${row}: チェックボックス=${checkboxValue}, 日時=${dateValue}, タイトル=${titleValue}`);
+      
+      if (checkboxValue) {
+        checkedCount++;
+      } else {
+        uncheckedCount++;
+      }
+      
+      // D列がチェックされていない場合のみ送信
+      if (!checkboxValue && dateValue && titleValue) {
+        const formattedDate = Utilities.formatDate(new Date(dateValue), 'Asia/Tokyo', 'yyyy/MM/dd HH:mm:ss');
+        
+        const message = {
+          content: null,
+          thread_name: `${titleValue} - ${formattedDate}`,
+          embeds: [{
+            title: titleValue,
+            description: summaryValue || '概要なし',
+            color: 5814783,
+            fields: [{
+              name: '日時',
+              value: formattedDate,
+              inline: true
+            }],
+            footer: {
+              text: '東京同窓会 - tldv議事録'
+            },
+            timestamp: new Date().toISOString()
+          }]
+        };
+        
+        const options = {
+          method: 'post',
+          contentType: 'application/json',
+          payload: JSON.stringify(message),
+          muteHttpExceptions: true
+        };
+        
+        const response = UrlFetchApp.fetch(webhookUrl, options);
+        
+        if (response.getResponseCode() === 204 || response.getResponseCode() === 200) {
+          console.log(`Discord送信成功 (行 ${row}): ${titleValue}`);
+          sheet.getRange(row, 4).setValue(true);
+          console.log(`チェックボックスを更新しました (行 ${row})`);
+          sentCount++;
+          
+          Utilities.sleep(1000);
+        } else {
+          console.error(`Discord送信エラー (行 ${row}):`, response.getContentText());
+        }
+      }
+    }
+    
+    console.log(`チェック済み: ${checkedCount}件, 未チェック: ${uncheckedCount}件`);
+    
+    if (sentCount > 0) {
+      SpreadsheetApp.getUi().alert(`${sentCount}件の通知をDiscordに送信しました。`);
+    } else {
+      SpreadsheetApp.getUi().alert(`送信対象の項目はありませんでした。\n（既に送信済みか、データが存在しません）\n\nデバッグ情報:\n- データ数: ${data.length}件\n- チェック済み: ${checkedCount}件\n- 未チェック: ${uncheckedCount}件`);
+    }
+    
+  } catch (error) {
+    console.error('Discord送信中にエラーが発生しました:', error);
+    SpreadsheetApp.getUi().alert('Discord送信中にエラーが発生しました。\n' + error.toString());
+  }
+}
+
+function setupDiscordTrigger() {
+  try {
+    removeDiscordTrigger();
+    
+    // 23時から24時の間のランダムな時間を生成
+    const randomMinute = Math.floor(Math.random() * 60);
+    
+    ScriptApp.newTrigger('sendUnsentToDiscord')
+      .timeBased()
+      .everyDays(1)
+      .atHour(23)
+      .nearMinute(randomMinute)
+      .create();
+    
+    SpreadsheetApp.getUi().alert(`Discord自動送信トリガーを設定しました。\n毎日23:${randomMinute.toString().padStart(2, '0')}頃に実行されます。`);
+  } catch (error) {
+    SpreadsheetApp.getUi().alert('Discord自動送信トリガーの設定に失敗しました。\n' + error.toString());
+  }
+}
+
+function removeDiscordTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'sendUnsentToDiscord') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  SpreadsheetApp.getUi().alert('Discord自動送信トリガーを削除しました。');
 }
